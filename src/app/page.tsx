@@ -7,15 +7,19 @@ const Homepage = () => {
   const [wallet, setWallet] = useState<web3.Keypair | null>(null);
 
   useEffect(() => {
-    const generateWallet = async () => {
+    const storedWallet = localStorage.getItem('wallet');
+    if (storedWallet) {
+      const secretKey = new Uint8Array(JSON.parse(storedWallet));
+      setWallet(web3.Keypair.fromSecretKey(secretKey));
+    } else {
       const newWallet = web3.Keypair.generate();
+      localStorage.setItem(
+        'wallet',
+        JSON.stringify(Array.from(newWallet.secretKey)),
+      );
       setWallet(newWallet);
-    };
-
-    generateWallet();
+    }
   }, []);
-
-  console.log(wallet);
 
   return (
     <section className="grid h-full place-content-center">
