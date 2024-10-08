@@ -14,37 +14,29 @@ import * as borsh from 'borsh';
 import { useEffect, useState } from 'react';
 import { toast, Toaster } from 'react-hot-toast';
 
+import {
+  GREETING_SIZE,
+  GreetingAccount,
+  GreetingSchema,
+  InstructionData,
+} from '@/common/types';
+
+// Program ID and RPC endpoint
 const PROGRAM_ID = new PublicKey(
   '5BFhyPN84At5mLcVbs83mLgp6aYiGJZ5JtDYese2DeLy',
 );
+const RPC_ENDPOINT = 'https://testnet.dev2.eclipsenetwork.xyz';
 
-class GreetingAccount {
-  counter = 0;
-  constructor(fields?: { counter: number }) {
-    if (fields) this.counter = fields.counter;
-  }
-}
+// Helper functions
+const getConnection = () => new Connection(RPC_ENDPOINT, 'confirmed');
 
-const GreetingSchema = new Map([
-  [GreetingAccount, { kind: 'struct', fields: [['counter', 'u32']] }],
-]);
+const getGreetedPubkey = async (wallet: Keypair) =>
+  PublicKey.createWithSeed(wallet.publicKey, 'hello', PROGRAM_ID);
 
-const GREETING_SIZE = borsh.serialize(
-  GreetingSchema,
-  new GreetingAccount(),
-).length;
-
-class InstructionData {
-  number: number;
-  constructor(fields: { number: number } | undefined = undefined) {
-    this.number = fields?.number ?? 0;
-  }
-}
-
-async function reportGreetings(
+const reportGreetings = async (
   connection: Connection,
   greetedPubkey: PublicKey,
-): Promise<string> {
+): Promise<string> => {
   const accountInfo = await connection.getAccountInfo(greetedPubkey);
   if (!accountInfo) throw 'Error: cannot find the greeted account';
 
@@ -54,11 +46,12 @@ async function reportGreetings(
     accountInfo.data,
   );
   return `${greetedPubkey.toBase58()} has been greeted ${greeting.counter} time(s)`;
-}
+};
 
 const Homepage = () => {
   const [wallet, setWallet] = useState<Keypair | null>(null);
 
+  // Load wallet from local storage or generate a new one
   useEffect(() => {
     const storedWallet = localStorage.getItem('wallet');
     if (storedWallet) {
@@ -75,98 +68,84 @@ const Homepage = () => {
     }
   }, []);
 
-  const handleClick = async () => {
+  // Handle greeting transaction
+  const handleSayHello = async () => {
     if (!wallet) return;
 
     const loadingToastId = toast.loading('Processing transaction...');
+    const connection = getConnection();
+    const greetedPubkey = await getGreetedPubkey(wallet);
 
-    const connection = new Connection(
-      'https://testnet.dev2.eclipsenetwork.xyz',
-      'confirmed',
-    );
-    console.log(`Using program ${PROGRAM_ID.toBase58()}`);
+    try {
+      // Create greeting account if it doesn't exist
+      const greetedAccount = await connection.getAccountInfo(greetedPubkey);
+      if (!greetedAccount) {
+        console.log(
+          'Creating account',
+          greetedPubkey.toBase58(),
+          'to say hello to',
+        );
+        const lamports =
+          await connection.getMinimumBalanceForRentExemption(GREETING_SIZE);
+        const createAccountTx = new Transaction().add(
+          SystemProgram.createAccountWithSeed({
+            fromPubkey: wallet.publicKey,
+            basePubkey: wallet.publicKey,
+            seed: 'hello',
+            newAccountPubkey: greetedPubkey,
+            lamports,
+            space: GREETING_SIZE,
+            programId: PROGRAM_ID,
+          }),
+        );
+        await sendAndConfirmTransaction(connection, createAccountTx, [wallet]);
+      }
 
-    const greetedPubkey = await PublicKey.createWithSeed(
-      wallet.publicKey,
-      'hello',
-      PROGRAM_ID,
-    );
-
-    // Create greeting account if it doesn't exist
-    const greetedAccount = await connection.getAccountInfo(greetedPubkey);
-    if (!greetedAccount) {
-      console.log(
-        'Creating account',
-        greetedPubkey.toBase58(),
-        'to say hello to',
-      );
-      const lamports =
-        await connection.getMinimumBalanceForRentExemption(GREETING_SIZE);
-      const transaction = new Transaction().add(
-        SystemProgram.createAccountWithSeed({
-          fromPubkey: wallet.publicKey,
-          basePubkey: wallet.publicKey,
-          seed: 'hello',
-          newAccountPubkey: greetedPubkey,
-          lamports,
-          space: GREETING_SIZE,
-          programId: PROGRAM_ID,
-        }),
-      );
-      await sendAndConfirmTransaction(connection, transaction, [wallet]);
-    }
-
-    const randomNumber = Math.floor(Math.random() * 101);
-
-    // Send greeting instruction
-    const instruction = new TransactionInstruction({
-      keys: [
-        { pubkey: greetedPubkey, isSigner: false, isWritable: true },
-        { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
-        {
-          pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
-          isSigner: false,
-          isWritable: false,
-        },
-      ],
-      programId: PROGRAM_ID,
-      data: Buffer.from(
-        borsh.serialize(
-          new Map([
-            [InstructionData, { kind: 'struct', fields: [['number', 'u32']] }],
-          ]),
-          new InstructionData({ number: randomNumber }),
+      // Send greeting instruction
+      const randomNumber = Math.floor(Math.random() * 101);
+      const instruction = new TransactionInstruction({
+        keys: [
+          { pubkey: greetedPubkey, isSigner: false, isWritable: true },
+          { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+          {
+            pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+            isSigner: false,
+            isWritable: false,
+          },
+        ],
+        programId: PROGRAM_ID,
+        data: Buffer.from(
+          borsh.serialize(
+            new Map([
+              [
+                InstructionData,
+                { kind: 'struct', fields: [['number', 'u32']] },
+              ],
+            ]),
+            new InstructionData({ number: randomNumber }),
+          ),
         ),
-      ),
-    });
-
-    sendAndConfirmTransaction(connection, new Transaction().add(instruction), [
-      wallet,
-    ])
-      .then(() => {
-        toast.success('Transaction successful', { id: loadingToastId });
-      })
-      .catch((error) => {
-        toast.error('Error sending transaction', { id: loadingToastId });
-        console.error('Error sending transaction:', error);
       });
+
+      await sendAndConfirmTransaction(
+        connection,
+        new Transaction().add(instruction),
+        [wallet],
+      );
+      toast.success('Transaction successful', { id: loadingToastId });
+    } catch (error) {
+      toast.error('Error sending transaction', { id: loadingToastId });
+      console.error('Error sending transaction:', error);
+    }
   };
 
-  const checkGreetings = async () => {
+  // Handle checking greetings
+  const handleCheckGreetings = async () => {
     if (!wallet) return;
 
     const loadingToastId = toast.loading('Checking greetings...');
-
-    const connection = new Connection(
-      'https://testnet.dev2.eclipsenetwork.xyz',
-      'confirmed',
-    );
-
-    const greetedPubkey = await PublicKey.createWithSeed(
-      wallet.publicKey,
-      'hello',
-      PROGRAM_ID,
-    );
+    const connection = getConnection();
+    const greetedPubkey = await getGreetedPubkey(wallet);
 
     try {
       const greetingMessage = await reportGreetings(connection, greetedPubkey);
@@ -182,13 +161,13 @@ const Homepage = () => {
       <Toaster position="top-right" />
       <button
         className="mb-2 rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
-        onClick={handleClick}
+        onClick={handleSayHello}
       >
         Say Hello
       </button>
       <button
         className="rounded bg-green-500 px-4 py-2 text-white hover:bg-green-600"
-        onClick={checkGreetings}
+        onClick={handleCheckGreetings}
       >
         Check Number of Greetings
       </button>
