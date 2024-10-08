@@ -6,14 +6,16 @@ import {
   PublicKey,
   sendAndConfirmTransaction,
   SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   Transaction,
   TransactionInstruction,
 } from '@solana/web3.js';
 import * as borsh from 'borsh';
 import { useEffect, useState } from 'react';
+import { toast, Toaster } from 'react-hot-toast';
 
 const PROGRAM_ID = new PublicKey(
-  '89CEviJRnMBntpnCGiSkqN37KoZSm1jbK2Uk23URGqpj',
+  '5BFhyPN84At5mLcVbs83mLgp6aYiGJZ5JtDYese2DeLy',
 );
 
 /**
@@ -43,9 +45,21 @@ const GREETING_SIZE = borsh.serialize(
   new GreetingAccount(),
 ).length;
 
-const randomAccount = new PublicKey(
-  'BE4VLUD2WeqsFjnYNmzWXD2dBXdLujem2QRzpHJTNrdm',
-);
+async function reportGreetings(
+  connection: Connection,
+  greetedPubkey: PublicKey,
+): Promise<string> {
+  const accountInfo = await connection.getAccountInfo(greetedPubkey);
+  if (accountInfo === null) {
+    throw 'Error: cannot find the greeted account';
+  }
+  const greeting = borsh.deserialize(
+    GreetingSchema,
+    GreetingAccount,
+    accountInfo.data,
+  );
+  return `${greetedPubkey.toBase58()} has been greeted ${greeting.counter} time(s)`;
+}
 
 const Homepage = () => {
   const [wallet, setWallet] = useState<Keypair | null>(null);
@@ -107,25 +121,40 @@ const Homepage = () => {
     }
 
     const instruction = new TransactionInstruction({
-      keys: [{ pubkey: greetedPubkey, isSigner: false, isWritable: true }],
+      keys: [
+        { pubkey: greetedPubkey, isSigner: false, isWritable: true },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+        {
+          pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
+          isSigner: false,
+          isWritable: false,
+        },
+      ],
       programId: PROGRAM_ID,
-      data: Buffer.alloc(0), // All instructions are hellos
+      data: Buffer.from([0]), // 0 represents the "hello" instruction
     });
 
     try {
-      const signature = await await sendAndConfirmTransaction(
+      await sendAndConfirmTransaction(
         connection,
         new Transaction().add(instruction),
         [wallet],
       );
-      console.log('Transaction confirmed. Signature:', signature);
+      const greetingMessage = await reportGreetings(connection, greetedPubkey);
+      toast.success(greetingMessage, {
+        id: toast.loading('Processing transaction...'),
+      });
     } catch (error) {
+      toast.error('Error sending transaction', {
+        id: toast.loading('Processing transaction...'),
+      });
       console.error('Error sending transaction:', error);
     }
   };
 
   return (
     <section className="grid h-full place-content-center">
+      <Toaster position="top-right" />
       <button
         className="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
         onClick={handleClick}
