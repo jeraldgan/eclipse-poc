@@ -18,41 +18,36 @@ const PROGRAM_ID = new PublicKey(
   '5BFhyPN84At5mLcVbs83mLgp6aYiGJZ5JtDYese2DeLy',
 );
 
-/**
- * The state of a greeting account managed by the hello world program
- */
 class GreetingAccount {
   counter = 0;
-  constructor(fields: { counter: number } | undefined = undefined) {
-    if (fields) {
-      this.counter = fields.counter;
-    }
+  constructor(fields?: { counter: number }) {
+    if (fields) this.counter = fields.counter;
   }
 }
 
-/**
- * Borsh schema definition for greeting accounts
- */
 const GreetingSchema = new Map([
   [GreetingAccount, { kind: 'struct', fields: [['counter', 'u32']] }],
 ]);
 
-/**
- * The expected size of each greeting account.
- */
 const GREETING_SIZE = borsh.serialize(
   GreetingSchema,
   new GreetingAccount(),
 ).length;
+
+class InstructionData {
+  number: number;
+  constructor(fields: { number: number } | undefined = undefined) {
+    this.number = fields?.number ?? 0;
+  }
+}
 
 async function reportGreetings(
   connection: Connection,
   greetedPubkey: PublicKey,
 ): Promise<string> {
   const accountInfo = await connection.getAccountInfo(greetedPubkey);
-  if (accountInfo === null) {
-    throw 'Error: cannot find the greeted account';
-  }
+  if (!accountInfo) throw 'Error: cannot find the greeted account';
+
   const greeting = borsh.deserialize(
     GreetingSchema,
     GreetingAccount,
@@ -67,8 +62,9 @@ const Homepage = () => {
   useEffect(() => {
     const storedWallet = localStorage.getItem('wallet');
     if (storedWallet) {
-      const secretKey = new Uint8Array(JSON.parse(storedWallet));
-      setWallet(Keypair.fromSecretKey(secretKey));
+      setWallet(
+        Keypair.fromSecretKey(new Uint8Array(JSON.parse(storedWallet))),
+      );
     } else {
       const newWallet = Keypair.generate();
       localStorage.setItem(
@@ -82,11 +78,12 @@ const Homepage = () => {
   const handleClick = async () => {
     if (!wallet) return;
 
+    const loadingToastId = toast.loading('Processing transaction...');
+
     const connection = new Connection(
       'https://testnet.dev2.eclipsenetwork.xyz',
       'confirmed',
     );
-
     console.log(`Using program ${PROGRAM_ID.toBase58()}`);
 
     const greetedPubkey = await PublicKey.createWithSeed(
@@ -95,9 +92,9 @@ const Homepage = () => {
       PROGRAM_ID,
     );
 
-    // Check if the greeting account has already been created
+    // Create greeting account if it doesn't exist
     const greetedAccount = await connection.getAccountInfo(greetedPubkey);
-    if (greetedAccount === null) {
+    if (!greetedAccount) {
       console.log(
         'Creating account',
         greetedPubkey.toBase58(),
@@ -105,7 +102,6 @@ const Homepage = () => {
       );
       const lamports =
         await connection.getMinimumBalanceForRentExemption(GREETING_SIZE);
-
       const transaction = new Transaction().add(
         SystemProgram.createAccountWithSeed({
           fromPubkey: wallet.publicKey,
@@ -120,6 +116,9 @@ const Homepage = () => {
       await sendAndConfirmTransaction(connection, transaction, [wallet]);
     }
 
+    const randomNumber = Math.floor(Math.random() * 101);
+
+    // Send greeting instruction
     const instruction = new TransactionInstruction({
       keys: [
         { pubkey: greetedPubkey, isSigner: false, isWritable: true },
@@ -131,24 +130,50 @@ const Homepage = () => {
         },
       ],
       programId: PROGRAM_ID,
-      data: Buffer.from([0]), // 0 represents the "hello" instruction
+      data: Buffer.from(
+        borsh.serialize(
+          new Map([
+            [InstructionData, { kind: 'struct', fields: [['number', 'u32']] }],
+          ]),
+          new InstructionData({ number: randomNumber }),
+        ),
+      ),
     });
 
+    sendAndConfirmTransaction(connection, new Transaction().add(instruction), [
+      wallet,
+    ])
+      .then(() => {
+        toast.success('Transaction successful', { id: loadingToastId });
+      })
+      .catch((error) => {
+        toast.error('Error sending transaction', { id: loadingToastId });
+        console.error('Error sending transaction:', error);
+      });
+  };
+
+  const checkGreetings = async () => {
+    if (!wallet) return;
+
+    const loadingToastId = toast.loading('Checking greetings...');
+
+    const connection = new Connection(
+      'https://testnet.dev2.eclipsenetwork.xyz',
+      'confirmed',
+    );
+
+    const greetedPubkey = await PublicKey.createWithSeed(
+      wallet.publicKey,
+      'hello',
+      PROGRAM_ID,
+    );
+
     try {
-      await sendAndConfirmTransaction(
-        connection,
-        new Transaction().add(instruction),
-        [wallet],
-      );
       const greetingMessage = await reportGreetings(connection, greetedPubkey);
-      toast.success(greetingMessage, {
-        id: toast.loading('Processing transaction...'),
-      });
+      toast.success(greetingMessage, { id: loadingToastId });
     } catch (error) {
-      toast.error('Error sending transaction', {
-        id: toast.loading('Processing transaction...'),
-      });
-      console.error('Error sending transaction:', error);
+      toast.error('Error checking greetings', { id: loadingToastId });
+      console.error('Error checking greetings:', error);
     }
   };
 
@@ -156,10 +181,16 @@ const Homepage = () => {
     <section className="grid h-full place-content-center">
       <Toaster position="top-right" />
       <button
-        className="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
+        className="mb-2 rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
         onClick={handleClick}
       >
         Say Hello
+      </button>
+      <button
+        className="rounded bg-green-500 px-4 py-2 text-white hover:bg-green-600"
+        onClick={checkGreetings}
+      >
+        Check Number of Greetings
       </button>
       {wallet && (
         <div className="mt-4">
